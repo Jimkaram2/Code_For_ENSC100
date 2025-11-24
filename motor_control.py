@@ -1,0 +1,131 @@
+import time # Pauses the script while servos are moving
+
+import datetime # Reads the datetime from the system clock featured on the rasp pi
+
+import RPi.GPIO as GPIO # Raspverry Pi's hardware library that controls the GPIO pin (Only can be used on rasp pi)
+
+
+SERVO_PIN = 18            # Use GPIO18 (supports hardware PWM), GPIO pin that is connected to the servo signal wire
+
+REST_ANGLE = 0            # Resting angle where servo sits
+
+DISPENSE_ANGLE = 90       # Angle to rotate to dispense pill
+
+PULSE_FREQ = 50           # Frequency for servo control (50 Hz)
+
+
+# Values provided from Dimitris' Code
+schedule = {
+
+    "day_index": None,    # 0 = Monday, 6 = Sunday
+
+    "hour": None,
+
+    "minute": None
+
+}
+
+# Day values provided from Dimitris' Code
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+def angle_to_duty_cycle(angle):
+
+    """
+    Convert angle (0–180 degrees) to duty cycle for SG-5010.
+
+    0° → 2.5% DC
+
+    180° → 12.5% DC
+
+    """
+    return 2.5 + (angle / 180.0) * 10.0 # Converts angles into PWM duty cycles, so the servo can understand
+
+# Code that actually moves the servo to the angle specified
+def move_servo_to(angle):
+
+    duty = angle_to_duty_cycle(angle) 
+
+    pwm.ChangeDutyCycle(duty) # Sends a signal to the servo
+
+    time.sleep(0.6)  # Allows servo to move
+
+
+# Code that rotates servo to dispensing angles, when the scheduled time is reached, then resets back to initial resting angle
+def dispense_pill():
+
+    print(">>> Dispensing pill...")
+
+    move_servo_to(DISPENSE_ANGLE) # Rotates the servo to dispensing position
+
+    time.sleep(0.7) # Holds position for 0.7 seconds
+
+    move_servo_to(REST_ANGLE) # Returns servo to resting angle
+
+    print(">>> Dispense complete.")
+
+# Checks the time and day to see when it matches the saved schedule inputted by the user, allowing the dispense_pill() code to run once
+def watch_schedule():
+
+    print("Waiting for scheduled time...")
+
+    last_trigger = None  # Tracks the last execution of code, prevents multiple triggers every second
+
+    while True: # Loop until CTRL-C is pressed, safely stopping the loop
+
+        now = datetime.datetime.now() # Checks current time
+
+        current_day = now.weekday()  # Conversion to day index
+
+
+        # Continues to wait until schedule is set
+
+        if schedule["day_index"] is None:
+
+            print("No schedule set yet. Waiting...")
+
+            time.sleep(5)
+
+            continue
+
+        # Check to see when the day, hour, and minute of the current time matches the schedule
+        if (current_day == schedule["day_index"] and
+            
+            now.hour == schedule["hour"] and
+
+            now.minute == schedule["minute"]):
+
+            # Ensure only one trigger per minute
+            if last_trigger != (now.year, now.month, now.day, now.hour, now.minute):
+
+                dispense_pill() # Running servo
+
+                last_trigger = (now.year, now.month, now.day, now.hour, now.minute)
+                
+        time.sleep(1) # Check every second
+
+
+
+GPIO.setmode(GPIO.BCM)  # Utilization of GPIO numbers
+
+GPIO.setup(SERVO_PIN, GPIO.OUT) # Sets the servo pin as the output
+
+# Creates a PWM controller with a frequency of 50Hz
+pwm = GPIO.PWM(SERVO_PIN, PULSE_FREQ)
+
+# Starts PWM with the servo at resting position
+pwm.start(angle_to_duty_cycle(REST_ANGLE))
+
+
+try:
+
+    watch_schedule() # Monitors schedules
+
+except KeyboardInterrupt:
+
+    pass # Allows stopping the program safely with CTRL-C
+
+finally:
+
+    pwm.stop() # Stops PWM signal
+
+    GPIO.cleanup() # Resets GPIO pins so that pins will behave correctly later on, preventing dmg
