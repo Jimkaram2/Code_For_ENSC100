@@ -4,7 +4,7 @@ Daily Dose - Combined pill dispenser logic for Raspberry Pi 4
 - 16x2 I2C LCD
 - 3 buttons (BCM: 5, 6, 13)
 - Fingerprint sensor on /dev/ttyS0
-- IR sensors on 17, 18 (LED indication)
+- IR sensors on 17 (Funnel 1) and 21 (Funnel 2)
 - LEDs on 27 (OK) and 22 (ERR)
 - HX711 load cell on 23 (DT) and 24 (SCK)
 - Two SG5010 servos on 18 and 19
@@ -34,8 +34,8 @@ for pin in (BTN_SET, BTN_FP, BTN_TIME):
     GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 # IR sensors (for two funnels)
-IR_PIN_F1 = 17  # Funnel 1 IR sensor
-IR_PIN_F2 = 18  # Funnel 2 IR sensor
+IR_PIN_F1 = 17  # Funnel 1 IR sensor (old)
+IR_PIN_F2 = 21  # Funnel 2 IR sensor (new)
 GPIO.setup(IR_PIN_F1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(IR_PIN_F2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
@@ -152,7 +152,6 @@ def set_schedule_menu():
     - Double press confirms and moves to next field
     Fields: Day -> Hour -> Minute
     """
-
     # ---- Day ----
     day = 0
     while True:
@@ -186,7 +185,6 @@ def set_schedule_menu():
             break
         time.sleep(0.05)
 
-    # Save schedule
     global schedule_funnel_1, schedule_funnel_2, last_target_minute, dispense_done_for_target
     schedule_funnel_1["day"] = day
     schedule_funnel_1["hour"] = hour
