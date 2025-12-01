@@ -149,10 +149,10 @@ def set_schedule_menu():
     - Double press confirms and moves to next field
     Fields: Day -> Hour -> Minute
     """
-    # ---- Day ----
+    # ---- Funnel 1 Day ----
     day = 0
     while True:
-        lcd_print("Set Day:", DAYS[day])
+        lcd_print("Set Funnel1 Day:", DAYS[day])
         press = detect_press_type(BTN_SET)
         if press == 1:
             day = (day + 1) % 7
@@ -160,10 +160,10 @@ def set_schedule_menu():
             break
         time.sleep(0.05)
 
-    # ---- Hour ---- (start at 0)
+    # ---- Funnel 1 Hour ----
     hour = 0
     while True:
-        lcd_print("Set Hour:", f"{hour:02d}")
+        lcd_print("Set Funnel1 Hour:", f"{hour:02d}")
         press = detect_press_type(BTN_SET)
         if press == 1:
             hour = (hour + 1) % 24
@@ -171,10 +171,10 @@ def set_schedule_menu():
             break
         time.sleep(0.05)
 
-    # ---- Minute ---- (start at 0)
+    # ---- Funnel 1 Minute ----
     minute = 0
     while True:
-        lcd_print("Set Minute:", f"{minute:02d}")
+        lcd_print("Set Funnel1 Minute:", f"{minute:02d}")
         press = detect_press_type(BTN_SET)
         if press == 1:
             minute = (minute + 1) % 60
@@ -191,7 +191,47 @@ def set_schedule_menu():
     last_target_minute = target_min
     dispense_done_for_target = False
 
-    lcd_print("Schedule Set!", f"{DAYS[day]} {hour:02d}:{minute:02d}")
+    lcd_print("Funnel 1 Schedule Set!", f"{DAYS[day]} {hour:02d}:{minute:02d}")
+    time.sleep(2)
+
+    # ---- Funnel 2 Day ----
+    day = 0
+    while True:
+        lcd_print("Set Funnel2 Day:", DAYS[day])
+        press = detect_press_type(BTN_SET)
+        if press == 1:
+            day = (day + 1) % 7
+        elif press == 2:
+            break
+        time.sleep(0.05)
+
+    # ---- Funnel 2 Hour ----
+    hour = 0
+    while True:
+        lcd_print("Set Funnel2 Hour:", f"{hour:02d}")
+        press = detect_press_type(BTN_SET)
+        if press == 1:
+            hour = (hour + 1) % 24
+        elif press == 2:
+            break
+        time.sleep(0.05)
+
+    # ---- Funnel 2 Minute ----
+    minute = 0
+    while True:
+        lcd_print("Set Funnel2 Minute:", f"{minute:02d}")
+        press = detect_press_type(BTN_SET)
+        if press == 1:
+            minute = (minute + 1) % 60
+        elif press == 2:
+            break
+        time.sleep(0.05)
+
+    schedule_funnel_2["day"] = day
+    schedule_funnel_2["hour"] = hour
+    schedule_funnel_2["minute"] = minute
+
+    lcd_print("Funnel 2 Schedule Set!", f"{DAYS[day]} {hour:02d}:{minute:02d}")
     time.sleep(2)
     show_main_menu()
 
@@ -244,110 +284,6 @@ def show_time_remaining():
     show_main_menu()
 
 # =========================
-#  FINGERPRINT HELPERS
-# =========================
-
-def get_fingerprint():
-    """
-    Basic fingerprint match routine.
-    Returns True if a stored finger template is matched, False otherwise.
-    """
-    while finger.get_image() != adafruit_fingerprint.OK:
-        time.sleep(0.1)
-
-    if finger.image_2_tz(1) != adafruit_fingerprint.OK:
-        return False
-
-    if finger.finger_search() != adafruit_fingerprint.OK:
-        return False
-
-    return True
-
-def enroll_fingerprint(slot=1):
-    """
-    Enroll routine using Adafruit library.
-    """
-    lcd_print("Enroll FP", f"ID {slot}")
-    time.sleep(1)
-
-    lcd_print("Place finger", "on sensor")
-    while finger.get_image() != adafruit_fingerprint.OK:
-        time.sleep(0.1)
-    if finger.image_2_tz(1) != adafruit_fingerprint.OK:
-        lcd_print("FP Error", "Try again")
-        time.sleep(2)
-        return False
-
-    lcd_print("Remove finger", "")
-    time.sleep(2)
-    while finger.get_image() != adafruit_fingerprint.NOFINGER:
-        time.sleep(0.1)
-
-    lcd_print("Place same", "finger again")
-    while finger.get_image() != adafruit_fingerprint.OK:
-        time.sleep(0.1)
-    if finger.image_2_tz(2) != adafruit_fingerprint.OK:
-        lcd_print("FP Error", "Try again")
-        time.sleep(2)
-        return False
-
-    if finger.create_model() != adafruit_fingerprint.OK:
-        lcd_print("Model fail", "")
-        time.sleep(2)
-        return False
-
-    if finger.store_model(slot) != adafruit_fingerprint.OK:
-        lcd_print("Store fail", "")
-        time.sleep(2)
-        return False
-
-    lcd_print("Enroll OK", f"ID {slot}")
-    time.sleep(2)
-    show_main_menu()
-    return True
-
-def fingerprint_setup_menu():
-    """
-    Simple fingerprint menu:
-    - Single press (Button 2): Enroll fingerprint (slot 1)
-    - Double press (Button 2): Exit back to main
-    """
-    while True:
-        lcd_print("FP Menu:", "1:Enroll  2:Exit")
-        press = detect_press_type(BTN_FP)
-        if press == 1:
-            enroll_fingerprint(slot=1)
-        elif press == 2:
-            lcd_print("Leaving FP", "Menu...")
-            time.sleep(1)
-            show_main_menu()
-            break
-        time.sleep(0.05)
-
-def verify_fingerprint_for_dose():
-    """Ask user to scan finger before dispensing."""
-    lcd_print("Dose Ready!", "Scan finger")
-    start = time.time()
-    timeout = 20  # seconds to wait
-
-    while time.time() - start < timeout:
-        if finger.get_image() == adafruit_fingerprint.OK:
-            if get_fingerprint():
-                lcd_print("FP OK", "")
-                time.sleep(1)
-                return True
-            else:
-                lcd_print("FP FAIL", "Try again")
-                time.sleep(2)
-                lcd_print("Scan finger", "again")
-        time.sleep(0.1)
-
-    lcd_print("FP timeout", "No dispense")
-    time.sleep(2)
-    show_main_menu()
-    return False
-
-# =========================
 #  IR + LOAD CELL HELPERS
 # =========================
 
@@ -375,41 +311,6 @@ def update_leds_with_infrared():
         GPIO.output(LED_ERR, GPIO.LOW)  # LED OFF (beam broken)
     else:
         GPIO.output(LED_ERR, GPIO.HIGH)  # LED ON (beam clear)
-
-def pill_detected_by_scale(threshold_grams=1.0):
-    """
-    Uses HX711 to check if at least 'threshold_grams' of weight change.
-    """
-    try:
-        weight = hx.get_weight(5)
-        hx.power_down()
-        hx.power_up()
-        return weight >= threshold_grams
-    except Exception as e:
-        print(f"Load cell error: {e}")
-        return False
-
-# =========================
-#  SERVO HELPERS
-# =========================
-
-def set_servo_angle(servo, angle):
-    """
-    Move a standard servo to 'angle' degrees (approx).
-    """
-    duty = 2 + (angle / 18.0)
-    servo.ChangeDutyCycle(duty)
-    time.sleep(0.4)
-    servo.ChangeDutyCycle(0)
-
-def dispense_pill_motor(servo):
-    """
-    Simple "open then close" motion to drop 1 pill.
-    """
-    set_servo_angle(servo, 90)
-    time.sleep(0.5)
-    set_servo_angle(servo, 0)
-    time.sleep(0.5)
 
 # =========================
 #  MAIN DISPENSE SEQUENCE
