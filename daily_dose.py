@@ -198,6 +198,15 @@ def set_schedule_menu():
     time.sleep(2)
     show_main_menu()
 
+def show_schedule():
+    """Show the current schedule for Funnel 1 and Funnel 2"""
+    funnel_1_schedule = f"F1: {DAYS[schedule_funnel_1['day']]} {schedule_funnel_1['hour']:02d}:{schedule_funnel_1['minute']:02d}"
+    funnel_2_schedule = f"F2: {DAYS[schedule_funnel_2['day']]} {schedule_funnel_2['hour']:02d}:{schedule_funnel_2['minute']:02d}"
+    
+    lcd_print(funnel_1_schedule, funnel_2_schedule)
+    time.sleep(2)
+    show_main_menu()
+
 def get_time_remaining():
     """
     Return (days, hours, minutes, target_minute) until next scheduled dose.
@@ -452,7 +461,7 @@ def run_dispense_sequence():
     GPIO.output(LED_OK, GPIO.LOW)
     lcd_print("Done!", "")
     time.sleep(2)
-    show_main_menu()  # Return to the main menu after dispensing
+    show_main_menu()
 
 # =========================
 #  MAIN LOOP / MENU
