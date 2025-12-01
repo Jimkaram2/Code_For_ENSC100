@@ -35,7 +35,7 @@ for pin in (BTN_SET, BTN_FP, BTN_TIME):
 
 # IR sensors (for two funnels)
 IR_PIN_F1 = 17  # Funnel 1 IR sensor (old)
-IR_PIN_F2 = 21  # Funnel 2 IR sensor (new)
+IR_PIN_F2 = 21  # Funnel 2 IR sensor (new) -> Placeholder for now, GPIO pins are set
 GPIO.setup(IR_PIN_F1, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 GPIO.setup(IR_PIN_F2, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
@@ -110,13 +110,10 @@ def detect_press_type(pin, timeout=0.4):
         2 = double press
     """
     if GPIO.input(pin) == GPIO.LOW:
-        # first press
         time.sleep(0.15)  # debounce
-        # Wait to see if there is a second press
         start = time.time()
         while time.time() - start < timeout:
             if GPIO.input(pin) == GPIO.LOW:
-                # second press
                 time.sleep(0.15)  # debounce
                 return 2
             time.sleep(0.01)
@@ -367,17 +364,17 @@ def update_leds_with_infrared():
     pill_present_f1 = (val_f1 == GPIO.LOW)
     pill_present_f2 = (val_f2 == GPIO.LOW)
 
-    # Funnel 1
+    # Funnel 1 (GPIO 17) controls LED_OK (GPIO 27)
     if pill_present_f1:
-        GPIO.output(LED_OK, GPIO.LOW)  # LED OFF
+        GPIO.output(LED_OK, GPIO.LOW)  # LED OFF (beam broken)
     else:
-        GPIO.output(LED_OK, GPIO.HIGH)  # LED ON
+        GPIO.output(LED_OK, GPIO.HIGH)  # LED ON (beam clear)
 
-    # Funnel 2
+    # Funnel 2 (GPIO 21) controls LED_ERR (GPIO 22)
     if pill_present_f2:
-        GPIO.output(LED_ERR, GPIO.LOW)  # LED OFF
+        GPIO.output(LED_ERR, GPIO.LOW)  # LED OFF (beam broken)
     else:
-        GPIO.output(LED_ERR, GPIO.HIGH)  # LED ON
+        GPIO.output(LED_ERR, GPIO.HIGH)  # LED ON (beam clear)
 
 def pill_detected_by_scale(threshold_grams=1.0):
     """
@@ -497,7 +494,7 @@ def main():
 
             # Button 3: double press -> go to main menu
             if press_time == 2:
-                show_main_menu()
+                show_main_menu()  # Directly return to main menu
 
             # Background scheduling logic
             tr = get_time_remaining()
