@@ -358,15 +358,17 @@ def update_leds_with_infrared():
     pill_present_f1 = (val_f1 == GPIO.LOW)
     pill_present_f2 = (val_f2 == GPIO.LOW)
 
+    # Funnel 1
     if pill_present_f1:
-        GPIO.output(LED_OK, GPIO.LOW)  # Funnel 1: LED OFF
+        GPIO.output(LED_OK, GPIO.LOW)  # LED OFF
     else:
-        GPIO.output(LED_OK, GPIO.HIGH)  # Funnel 1: LED ON
+        GPIO.output(LED_OK, GPIO.HIGH)  # LED ON
 
+    # Funnel 2
     if pill_present_f2:
-        GPIO.output(LED_ERR, GPIO.LOW)  # Funnel 2: LED OFF
+        GPIO.output(LED_ERR, GPIO.LOW)  # LED OFF
     else:
-        GPIO.output(LED_ERR, GPIO.HIGH)  # Funnel 2: LED ON
+        GPIO.output(LED_ERR, GPIO.HIGH)  # LED ON
 
 def pill_detected_by_scale(threshold_grams=1.0):
     """
@@ -420,7 +422,7 @@ def run_dispense_sequence():
         GPIO.output(LED_ERR, GPIO.HIGH)
         time.sleep(2)
         GPIO.output(LED_ERR, GPIO.LOW)
-        # verify_fingerprint_for_dose() already called show_main_menu()
+        show_main_menu()  # Ensure we return to the main menu if FP fails
         return
 
     GPIO.output(LED_OK, GPIO.HIGH)
@@ -450,7 +452,7 @@ def run_dispense_sequence():
     GPIO.output(LED_OK, GPIO.LOW)
     lcd_print("Done!", "")
     time.sleep(2)
-    show_main_menu()
+    show_main_menu()  # Return to the main menu after dispensing
 
 # =========================
 #  MAIN LOOP / MENU
@@ -501,14 +503,14 @@ def main():
                 if d == 0 and h == 0 and m == 1 and not dispense_done_for_target:
                     lcd_print("Arming scale", "Dose soon...")
                     time.sleep(2)
-                    show_main_menu()
+                    show_main_menu()  # Return to menu after showing the arming message
 
                 # At dose time
                 if d == 0 and h == 0 and m == 0 and not dispense_done_for_target:
                     run_dispense_sequence()
                     dispense_done_for_target = True
 
-            time.sleep(0.05)
+            time.sleep(0.05)  # Delay to control loop timing
 
     except KeyboardInterrupt:
         pass
