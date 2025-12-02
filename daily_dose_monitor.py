@@ -66,6 +66,28 @@ uart = serial.Serial("/dev/ttyS0", baudrate=57600, timeout=1)
 finger = adafruit_fingerprint.Adafruit_Fingerprint(uart)
 
 # =========================
+#  SCHEDULER STATE  <<< NEW >>>
+# =========================
+
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+# Schedule for Funnel 1 and Funnel 2
+schedule_funnel_1 = {
+    "day": None,     # 0-6
+    "hour": None,    # 0-23
+    "minute": None   # 0-59
+}
+
+schedule_funnel_2 = {
+    "day": None,     # 0-6
+    "hour": None,    # 0-23
+    "minute": None   # 0-59
+}
+
+last_target_minute = None
+dispense_done_for_target = False
+
+# =========================
 #  "LCD" HELPERS -> TERMINAL
 # =========================
 
@@ -317,6 +339,81 @@ def set_schedule_menu():
     show_main_menu()
 
 # =========================
+#  TIME REMAINING HELPERS  <<< NEW >>>
+# =========================
+
+def _get_time_remaining_for_schedule(schedule):
+    """
+    Compute time remaining for a given schedule dict.
+    Returns (days, hours, minutes, target_minute) or None if not set.
+    """
+    if schedule["day"] is None:
+        return None
+
+    now = datetime.datetime.now()
+    current_min = now.weekday() * 24 * 60 + now.hour * 60 + now.minute
+    target_min = (schedule["day"] * 24 * 60 +
+                  schedule["hour"] * 60 +
+                  schedule["minute"])
+
+    # Move to next week if already passed
+    if target_min < current_min:
+        target_min += 7 * 24 * 60
+
+    delta = target_min - current_min
+    d = delta // (24 * 60)
+    h = (delta % (24 * 60)) // 60
+    m = delta % 60
+    return d, h, m, target_min
+
+
+def get_time_remaining():
+    """
+    Kept for background scheduling logic (Funnel 1 only).
+    Returns time remaining for Funnel 1 schedule.
+    """
+    return _get_time_remaining_for_schedule(schedule_funnel_1)
+
+
+def show_time_remaining():
+    """
+    Show time remaining for BOTH Funnel 1 and Funnel 2 on the terminal.
+    Triggered by Button 3 single press.
+    """
+    tr1 = _get_time_remaining_for_schedule(schedule_funnel_1)
+    tr2 = _get_time_remaining_for_schedule(schedule_funnel_2)
+
+    if tr1 is None and tr2 is None:
+        lcd_print("No schedules set", "Use Btn1 to set")
+        time.sleep(2)
+        show_main_menu()
+        return
+
+    # Build line for Funnel 1
+    if tr1 is None:
+        line1 = "F1: -- (no sched)"
+    else:
+        d1, h1, m1, _ = tr1
+        if d1 > 0:
+            line1 = f"F1: {d1}d {h1}h {m1}m"
+        else:
+            line1 = f"F1: {h1:02d}h {m1:02d}m"
+
+    # Build line for Funnel 2
+    if tr2 is None:
+        line2 = "F2: -- (no sched)"
+    else:
+        d2, h2, m2, _ = tr2
+        if d2 > 0:
+            line2 = f"F2: {d2}d {h2}h {m2}m"
+        else:
+            line2 = f"F2: {h2:02d}h {m2:02d}m"
+
+    lcd_print(line1, line2)
+    time.sleep(2)
+    show_main_menu()
+
+# =========================
 #  MAIN DISPENSE SEQUENCE
 # =========================
 # Assumes:
@@ -412,7 +509,7 @@ def main():
             if press_fp == 1:
                 fingerprint_setup_menu()
 
-            # Button 3: single press -> show time remaining
+            # Button 3: single press -> show time remaining (now shows F1 + F2)
             if press_time == 1:
                 show_time_remaining()
 
