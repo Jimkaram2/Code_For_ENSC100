@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
 """
 Daily Dose - Combined pill dispenser logic for Raspberry Pi 4
-- Terminal-based menu (no LCD)
+- Terminal-based menu (no LCD hardware, just prints)
 - 3 buttons (BCM: 5, 6, 13)
 - Fingerprint sensor on /dev/ttyS0
-- LEDs on 27 (Funnel 1 empty) and 22 (Funnel 2 empty)
 - HX711 load cell on 23 (DT) and 24 (SCK)
-- Two SG5010 servos on 18 and 19
+- Two SG5010 servos driven by PCA9685 (channels 0 and 1)
 - Pill inventory tracked in software (user input + load cell)
+- State (schedules + pill counts) persisted in daily_dose_state.json
 """
 
 import time
 import datetime
 import serial
-import RPi.GPIO as GPIO
+import json
+import os
 
+import RPi.GPIO as GPIO
+import board
+import busio
+from adafruit_pca9685 import PCA9685
 import adafruit_fingerprint
 from hx711 import HX711
+
+# =========================
+#  FILE PERSISTENCE
+# =========================
+
+STATE_FILE = "daily_dose_state.json"
 
 # =========================
 #  HARDWARE SETUP
@@ -25,36 +36,123 @@ from hx711 import HX711
 GPIO.setmode(GPIO.BCM)
 
 # Buttons
-BTN_SET  = 5   # Button 1: Set schedule / refill (double press)
-BTN_FP   = 6   # Button 2: Fingerprint menu
+BTN_SET  = 5   # Button 1: Set schedule / refill
+BTN_FP   = 6   # Button 2: Fingerprint / confirm
 BTN_TIME = 13  # Button 3: Time remaining / return to menu (double press)
 
 for pin in (BTN_SET, BTN_FP, BTN_TIME):
     GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# LEDs (used as "empty" indicators)
-LED_OK  = 27   # Funnel 1 empty indicator
-LED_ERR = 22   # Funnel 2 empty indicator
-GPIO.setup(LED_OK, GPIO.OUT)
-GPIO.setup(LED_ERR, GPIO.OUT)
-GPIO.output(LED_OK, GPIO.LOW)   # LOW = not empty
-GPIO.output(LED_ERR, GPIO.LOW)
+# ===== PCA9685 SERVO DRIVER =====
+i2c = busio.I2C(board.SCL, board.SDA)
+pca = PCA9685(i2c)
+pca.frequency = 50  # 50 Hz for standard servos
 
-# Servos
-SERVO1_PIN = 18   # Funnel 1
-SERVO2_PIN = 19   # Funnel 2
-GPIO.setup(SERVO1_PIN, GPIO.OUT)
-GPIO.setup(SERVO2_PIN, GPIO.OUT)
+MIN_US = 500
+MAX_US = 2500
+PERIOD_US = 1000000 / 50.0  # 20000 µs period
 
-servo1 = GPIO.PWM(SERVO1_PIN, 50)  # 50 Hz PWM
-servo2 = GPIO.PWM(SERVO2_PIN, 50)
-servo1.start(0)
-servo2.start(0)
+# === PER-SERVO CENTERS (physical degrees) ===
+PHYSICAL_CENTER_SERVO1 = 30
+PHYSICAL_CENTER_SERVO2 = 10
 
-# Load cell / HX711
+# === PER-SERVO TARGET OFFSETS (relative to each center) ===
+TARGET_OFFSET_SERVO1 = -30   # from 30° -> 0°
+TARGET_OFFSET_SERVO2 = 31    # from 10° -> 41°
+
+def angle_to_duty(angle_deg):
+    """Convert angle in degrees to 16-bit duty cycle for PCA9685."""
+    angle = max(0, min(180, angle_deg))  # clamp to servo range
+    pulse_us = MIN_US + (MAX_US - MIN_US) * (angle / 180.0)
+    duty = int((pulse_us / PERIOD_US) * 65535)
+    return duty
+
+def set_servo_physical(channel, physical_angle):
+    """Set servo on PCA9685 channel to a physical angle."""
+    pca.channels[channel].duty_cycle = angle_to_duty(physical_angle)
+
+def set_servo1_logical(offset):
+    """offset in degrees relative to servo 1's center."""
+    physical = PHYSICAL_CENTER_SERVO1 + offset
+    set_servo_physical(0, physical)
+
+def set_servo2_logical(offset):
+    """offset in degrees relative to servo 2's center."""
+    physical = PHYSICAL_CENTER_SERVO2 + offset
+    set_servo_physical(1, physical)
+
+def dispense_servo1_once():
+    """
+    Move servo 1: center -> target offset -> back to center.
+    Uses the same stepping logic as your test script.
+    """
+    set_servo1_logical(0)
+    time.sleep(0.3)
+
+    max_step   = abs(TARGET_OFFSET_SERVO1)
+    STEP_SIZE  = max_step   # one big jump
+    STEP_DELAY = 0.055
+
+    # Center -> Target offset
+    for step in range(0, max_step + STEP_SIZE, STEP_SIZE):
+        if TARGET_OFFSET_SERVO1 >= 0:
+            off1 = min(step, TARGET_OFFSET_SERVO1)
+        else:
+            off1 = max(-step, TARGET_OFFSET_SERVO1)
+        set_servo1_logical(off1)
+        time.sleep(STEP_DELAY)
+
+    # Target -> Center
+    for step in range(max_step, -STEP_SIZE, -STEP_SIZE):
+        if TARGET_OFFSET_SERVO1 >= 0:
+            off1 = max(step, 0)
+        else:
+            off1 = min(-step, 0)
+        set_servo1_logical(off1)
+        time.sleep(STEP_DELAY)
+
+    set_servo1_logical(0)
+    time.sleep(0.2)
+
+def dispense_servo2_once():
+    """
+    Move servo 2: center -> target offset -> back to center.
+    Uses the same stepping logic as your test script.
+    """
+    set_servo2_logical(0)
+    time.sleep(0.3)
+
+    max_step   = abs(TARGET_OFFSET_SERVO2)
+    STEP_SIZE  = max_step   # one big jump
+    STEP_DELAY = 0.055
+
+    # Center -> Target offset
+    for step in range(0, max_step + STEP_SIZE, STEP_SIZE):
+        if TARGET_OFFSET_SERVO2 >= 0:
+            off2 = min(step, TARGET_OFFSET_SERVO2)
+        else:
+            off2 = max(-step, TARGET_OFFSET_SERVO2)
+        set_servo2_logical(off2)
+        time.sleep(STEP_DELAY)
+
+    # Target -> Center
+    for step in range(max_step, -STEP_SIZE, -STEP_SIZE):
+        if TARGET_OFFSET_SERVO2 >= 0:
+            off2 = max(step, 0)
+        else:
+            off2 = min(-step, 0)
+        set_servo2_logical(off2)
+        time.sleep(STEP_DELAY)
+
+    set_servo2_logical(0)
+    time.sleep(0.2)
+
+# ===== HX711 LOAD CELL =====
 DT_PIN  = 23   # HX711 DT
 SCK_PIN = 24   # HX711 SCK
-CALIBRATION_FACTOR = -7050  # TODO: adjust this
+
+# Use your calibrated factor
+CALIBRATION_FACTOR = 45.06  # <-- adjust if needed
 
 hx = HX711(DT_PIN, SCK_PIN)
 hx.set_reference_unit(CALIBRATION_FACTOR)
@@ -66,26 +164,33 @@ uart = serial.Serial("/dev/ttyS0", baudrate=57600, timeout=1)
 finger = adafruit_fingerprint.Adafruit_Fingerprint(uart)
 
 # =========================
-#  SCHEDULER STATE  <<< NEW >>>
+#  PER-FUNNEL PILL WEIGHT SETTINGS
+# =========================
+# Tune these for your two pills (in grams).
+# Example: F1 pill ~0.75g, F2 pill ~1.2g
+PILL_THRESHOLD_F1   = 0.4   # minimum |weight| to call "one pill" in Funnel 1
+PILL_THRESHOLD_F2   = 0.4   # minimum |weight| to call "one pill" in Funnel 2
+
+OVERDOSE_FACTOR_F1  = 1.8   # ≥ threshold * factor => potential overdose (F1)
+OVERDOSE_FACTOR_F2  = 1.8   # ≥ threshold * factor => potential overdose (F2)
+
+MAX_ATTEMPTS_PER_DOSE = 10  # safety: how many retries per dose
+
+# =========================
+#  SCHEDULER STATE
 # =========================
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 # Schedule for Funnel 1 and Funnel 2
-schedule_funnel_1 = {
-    "day": None,     # 0-6
-    "hour": None,    # 0-23
-    "minute": None   # 0-59
-}
+schedule_funnel_1 = {"day": None, "hour": None, "minute": None}
+schedule_funnel_2 = {"day": None, "hour": None, "minute": None}
 
-schedule_funnel_2 = {
-    "day": None,     # 0-6
-    "hour": None,    # 0-23
-    "minute": None   # 0-59
-}
-
-last_target_minute = None
-dispense_done_for_target = False
+# per-funnel tracking
+last_target_minute_f1 = None
+last_target_minute_f2 = None
+dispense_done_for_target_f1 = False
+dispense_done_for_target_f2 = False
 
 # =========================
 #  "LCD" HELPERS -> TERMINAL
@@ -138,56 +243,92 @@ def detect_press_type(pin, timeout=0.4):
     return 0
 
 # =========================
-#  PILL INVENTORY
+#  PILL INVENTORY + STATE PERSISTENCE
 # =========================
 
 pills_funnel_1 = 0
 pills_funnel_2 = 0
 
+def save_state():
+    """Save pill counts and schedules to JSON file."""
+    state = {
+        "pills_funnel_1": pills_funnel_1,
+        "pills_funnel_2": pills_funnel_2,
+        "schedule_funnel_1": schedule_funnel_1,
+        "schedule_funnel_2": schedule_funnel_2,
+    }
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f"Error saving state: {e}")
+
+def load_state():
+    """Load pill counts and schedules from JSON file, if present."""
+    global pills_funnel_1, pills_funnel_2
+    global schedule_funnel_1, schedule_funnel_2
+    if not os.path.exists(STATE_FILE):
+        return False
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+        pills_funnel_1 = state.get("pills_funnel_1", 0)
+        pills_funnel_2 = state.get("pills_funnel_2", 0)
+        sf1 = state.get("schedule_funnel_1", {})
+        sf2 = state.get("schedule_funnel_2", {})
+        schedule_funnel_1["day"]    = sf1.get("day", None)
+        schedule_funnel_1["hour"]   = sf1.get("hour", None)
+        schedule_funnel_1["minute"] = sf1.get("minute", None)
+        schedule_funnel_2["day"]    = sf2.get("day", None)
+        schedule_funnel_2["hour"]   = sf2.get("hour", None)
+        schedule_funnel_2["minute"] = sf2.get("minute", None)
+        return True
+    except Exception as e:
+        print(f"Error loading state: {e}")
+        return False
+
+def count_with_buttons(prompt_funnel, initial_value=0, max_count=99):
+    """
+    Generic counter using:
+    - Button 1 single press: increment count (wraps 0..max_count) by 5
+    - Button 2 single press: confirm and return the value
+    """
+    count = max(0, min(initial_value, max_count))
+    while True:
+        lcd_print(
+            f"{prompt_funnel}",
+            f"Count: {count:02d}  (B1:+5  B2:OK)"
+        )
+
+        press_set = detect_press_type(BTN_SET)   # Button 1
+        press_fp  = detect_press_type(BTN_FP)    # Button 2
+
+        if press_set == 1:   # increment by 5
+            count = (count + 5) % (max_count + 1)
+        elif press_fp == 1:  # confirm
+            return count
+
+        time.sleep(0.05)
+
 def init_pill_counts():
-    """Ask user how many pills are in each funnel initially (via keyboard)."""
+    """
+    Ask user how many pills are in each funnel using buttons:
+    - B1: increment by 5
+    - B2: confirm
+    """
     global pills_funnel_1, pills_funnel_2
 
-    while True:
-        try:
-            val = int(input("Enter initial pill count for Funnel 1: "))
-            if val < 0:
-                print("Please enter a non-negative number.")
-                continue
-            pills_funnel_1 = val
-            break
-        except ValueError:
-            print("Invalid input. Please enter an integer.")
+    pills_funnel_1 = count_with_buttons("Init Funnel 1 Pills:", pills_funnel_1)
+    pills_funnel_2 = count_with_buttons("Init Funnel 2 Pills:", pills_funnel_2)
 
-    while True:
-        try:
-            val = int(input("Enter initial pill count for Funnel 2: "))
-            if val < 0:
-                print("Please enter a non-negative number.")
-                continue
-            pills_funnel_2 = val
-            break
-        except ValueError:
-            print("Invalid input. Please enter an integer.")
-
-    update_leds_with_inventory()
-    print(f"Initial inventory -> Funnel 1: {pills_funnel_1}, Funnel 2: {pills_funnel_2}")
+    lcd_print("Initial inventory:",
+              f"F1:{pills_funnel_1}  F2:{pills_funnel_2}")
+    time.sleep(2)
+    save_state()
 
 def update_leds_with_inventory():
-    """
-    LEDs indicate empty funnels now:
-    - If pill count <= 0 -> LED ON (HIGH) = empty
-    - If pill count > 0  -> LED OFF (LOW)
-    """
-    if pills_funnel_1 <= 0:
-        GPIO.output(LED_OK, GPIO.HIGH)
-    else:
-        GPIO.output(LED_OK, GPIO.LOW)
-
-    if pills_funnel_2 <= 0:
-        GPIO.output(LED_ERR, GPIO.HIGH)
-    else:
-        GPIO.output(LED_ERR, GPIO.LOW)
+    """No-op now (LEDs removed)."""
+    return
 
 # =========================
 #  REFILL MENU
@@ -195,45 +336,18 @@ def update_leds_with_inventory():
 
 def refill_menu():
     """
-    Refill procedure using Button 1:
-    - Single press: increment count (0–99 loop)
-    - Double press: confirm value and move on
+    Refill procedure using buttons:
+    - Button 1 single press: increment count (0–99 loop) by 5
+    - Button 2 single press: confirm value and move on
     Adjusts Funnel 1 then Funnel 2.
     """
     global pills_funnel_1, pills_funnel_2
-    max_count = 99
 
-    # ---- Refill Funnel 1 ----
-    count = max(0, min(pills_funnel_1, max_count))
-    while True:
-        lcd_print(
-            f"Refill Funnel 1:",
-            f"Count: {count:02d}  (B1:+  B1 dbl:OK)"
-        )
-        press = detect_press_type(BTN_SET)
-        if press == 1:
-            count = (count + 1) % (max_count + 1)
-        elif press == 2:
-            pills_funnel_1 = count
-            break
-        time.sleep(0.05)
+    pills_funnel_1 = count_with_buttons("Refill Funnel 1:", pills_funnel_1)
+    pills_funnel_2 = count_with_buttons("Refill Funnel 2:", pills_funnel_2)
 
-    # ---- Refill Funnel 2 ----
-    count = max(0, min(pills_funnel_2, max_count))
-    while True:
-        lcd_print(
-            f"Refill Funnel 2:",
-            f"Count: {count:02d}  (B1:+  B1 dbl:OK)"
-        )
-        press = detect_press_type(BTN_SET)
-        if press == 1:
-            count = (count + 1) % (max_count + 1)
-        elif press == 2:
-            pills_funnel_2 = count
-            break
-        time.sleep(0.05)
+    save_state()
 
-    update_leds_with_inventory()
     lcd_print("Refill Complete",
               f"F1:{pills_funnel_1}  F2:{pills_funnel_2}")
     time.sleep(2)
@@ -250,6 +364,10 @@ def set_schedule_menu():
     - Double press confirms and moves to next field
     Fields: Funnel1 Day -> Hour -> Minute, then Funnel2 Day -> Hour -> Minute
     """
+    global schedule_funnel_1, schedule_funnel_2
+    global last_target_minute_f1, last_target_minute_f2
+    global dispense_done_for_target_f1, dispense_done_for_target_f2
+
     # ---- Funnel 1 Day ----
     day = 0
     while True:
@@ -283,14 +401,13 @@ def set_schedule_menu():
             break
         time.sleep(0.05)
 
-    global schedule_funnel_1, schedule_funnel_2, last_target_minute, dispense_done_for_target
     schedule_funnel_1["day"] = day
     schedule_funnel_1["hour"] = hour
     schedule_funnel_1["minute"] = minute
 
-    target_min = day * 24 * 60 + hour * 60 + minute
-    last_target_minute = target_min
-    dispense_done_for_target = False
+    target_min_f1 = day * 24 * 60 + hour * 60 + minute
+    last_target_minute_f1 = target_min_f1
+    dispense_done_for_target_f1 = False
 
     lcd_print("Funnel 1 Schedule Set!",
               f"{DAYS[day]} {hour:02d}:{minute:02d}")
@@ -333,13 +450,19 @@ def set_schedule_menu():
     schedule_funnel_2["hour"] = hour
     schedule_funnel_2["minute"] = minute
 
+    target_min_f2 = day * 24 * 60 + hour * 60 + minute
+    last_target_minute_f2 = target_min_f2
+    dispense_done_for_target_f2 = False
+
     lcd_print("Funnel 2 Schedule Set!",
               f"{DAYS[day]} {hour:02d}:{minute:02d}")
     time.sleep(2)
+
+    save_state()
     show_main_menu()
 
 # =========================
-#  TIME REMAINING HELPERS  <<< NEW >>>
+#  TIME REMAINING HELPERS
 # =========================
 
 def _get_time_remaining_for_schedule(schedule):
@@ -366,15 +489,6 @@ def _get_time_remaining_for_schedule(schedule):
     m = delta % 60
     return d, h, m, target_min
 
-
-def get_time_remaining():
-    """
-    Kept for background scheduling logic (Funnel 1 only).
-    Returns time remaining for Funnel 1 schedule.
-    """
-    return _get_time_remaining_for_schedule(schedule_funnel_1)
-
-
 def show_time_remaining():
     """
     Show time remaining for BOTH Funnel 1 and Funnel 2 on the terminal.
@@ -389,7 +503,7 @@ def show_time_remaining():
         show_main_menu()
         return
 
-    # Build line for Funnel 1
+    # Funnel 1 line
     if tr1 is None:
         line1 = "F1: -- (no sched)"
     else:
@@ -399,7 +513,7 @@ def show_time_remaining():
         else:
             line1 = f"F1: {h1:02d}h {m1:02d}m"
 
-    # Build line for Funnel 2
+    # Funnel 2 line
     if tr2 is None:
         line2 = "F2: -- (no sched)"
     else:
@@ -414,65 +528,211 @@ def show_time_remaining():
     show_main_menu()
 
 # =========================
-#  MAIN DISPENSE SEQUENCE
+#  FINGERPRINT + SCALE HELPERS
 # =========================
-# Assumes:
-#   - verify_fingerprint_for_dose()
-#   - pill_detected_by_scale()
-#   - dispense_pill_motor(servo)
-#   - fingerprint_setup_menu()
-# are defined elsewhere.
 
-def run_dispense_sequence():
+def get_fingerprint():
+    """Low-level fingerprint check (returns True if match)."""
+    while finger.get_image() != adafruit_fingerprint.OK:
+        time.sleep(0.1)
+
+    if finger.image_2_tz(1) != adafruit_fingerprint.OK:
+        return False
+
+    if finger.finger_search() != adafruit_fingerprint.OK:
+        return False
+
+    return True
+
+def verify_fingerprint_for_dose(timeout=20):
+    """Ask user to scan fingerprint before dispensing."""
+    lcd_print("Dose Ready!", "Scan finger")
+    start = time.time()
+
+    while time.time() - start < timeout:
+        if finger.get_image() == adafruit_fingerprint.OK:
+            if get_fingerprint():
+                lcd_print("FP OK", "")
+                time.sleep(1)
+                return True
+            else:
+                lcd_print("FP FAIL", "Try again")
+                time.sleep(2)
+                lcd_print("Scan finger", "again")
+        time.sleep(0.1)
+
+    lcd_print("FP timeout", "No dispense")
+    time.sleep(2)
+    show_main_menu()
+    return False
+
+def fingerprint_setup_menu():
     """
-    Full sequence:
+    Simple fingerprint menu:
+    - Single press (Button 2): Enroll fingerprint (slot 1)
+    - Double press (Button 2): Exit back to main
+    """
+    while True:
+        lcd_print("FP Menu:", "B2:Enroll  B2dbl:Exit")
+        press = detect_press_type(BTN_FP)
+        if press == 1:
+            enroll_fingerprint(slot=1)
+        elif press == 2:
+            lcd_print("Leaving FP", "Menu...")
+            time.sleep(1)
+            show_main_menu()
+            break
+        time.sleep(0.05)
+
+def enroll_fingerprint(slot=1):
+    """Basic enroll routine."""
+    lcd_print("Enroll FP", f"ID {slot}")
+    time.sleep(1)
+
+    lcd_print("Place finger", "on sensor")
+    while finger.get_image() != adafruit_fingerprint.OK:
+        time.sleep(0.1)
+    if finger.image_2_tz(1) != adafruit_fingerprint.OK:
+        lcd_print("FP Error", "Try again")
+        time.sleep(2)
+        return False
+
+    lcd_print("Remove finger", "")
+    time.sleep(2)
+    while finger.get_image() != adafruit_fingerprint.NOFINGER:
+        time.sleep(0.1)
+
+    lcd_print("Place same", "finger again")
+    while finger.get_image() != adafruit_fingerprint.OK:
+        time.sleep(0.1)
+    if finger.image_2_tz(2) != adafruit_fingerprint.OK:
+        lcd_print("FP Error", "Try again")
+        time.sleep(2)
+        return False
+
+    if finger.create_model() != adafruit_fingerprint.OK:
+        lcd_print("Model fail", "")
+        time.sleep(2)
+        return False
+
+    if finger.store_model(slot) != adafruit_fingerprint.OK:
+        lcd_print("Store fail", "")
+        time.sleep(2)
+        return False
+
+    lcd_print("Enroll OK", f"ID {slot}")
+    time.sleep(2)
+    show_main_menu()
+    return True
+
+def pill_detected_by_scale_raw(num_samples=5):
+    """
+    Helper to read the scale and return the raw weight in grams (could be negative).
+    """
+    try:
+        weight = hx.get_weight(num_samples)
+        hx.power_down()
+        hx.power_up()
+        return weight
+    except Exception as e:
+        print(f"Load cell error: {e}")
+        return 0.0
+
+# =========================
+#  DISPENSE PER FUNNEL (WITH PER-FUNNEL THRESHOLDS)
+# =========================
+
+def run_dispense_for_funnel(funnel):
+    """
+    Dispense sequence for a single funnel (1 or 2) with retry + per-funnel
+    pill thresholds + overdose detection:
     - Ask for fingerprint
-    - Run Motor1, check load cell -> decrement Funnel 1 count
-    - Run Motor2, check load cell -> decrement Funnel 2 count
-    LEDs indicate empty funnels based on inventory.
+    - Repeatedly run the servo for that funnel until:
+        * load cell detects at least one pill, OR
+        * max attempts reached
+    - If load cell suggests >1 pill (big weight), show 'Potential overdose'
     """
     global pills_funnel_1, pills_funnel_2
 
+    # --- fingerprint gate ---
     if not verify_fingerprint_for_dose():
-        GPIO.output(LED_ERR, GPIO.HIGH)
+        lcd_print("FP failed", "No dispense")
         time.sleep(2)
-        GPIO.output(LED_ERR, GPIO.LOW)
         show_main_menu()
         return
 
-    # Motor 1 -> Funnel 1
-    lcd_print("Motor 1 ON", "Dropping Pill 1...")
-    dispense_pill_motor(servo1)
-    lcd_print("Checking Pill 1", "")
-    if pill_detected_by_scale():
+    # Pick thresholds for the correct funnel
+    if funnel == 1:
+        SINGLE_PILL_THRESHOLD = PILL_THRESHOLD_F1
+        OVERDOSE_FACTOR       = OVERDOSE_FACTOR_F1
+    else:
+        SINGLE_PILL_THRESHOLD = PILL_THRESHOLD_F2
+        OVERDOSE_FACTOR       = OVERDOSE_FACTOR_F2
+
+    attempts      = 0
+    pill_detected = False
+    overdose      = False
+
+    # Try to zero the scale at start of dispense
+    try:
+        hx.tare()
+    except Exception as e:
+        print(f"HX711 tare error: {e}")
+
+    while attempts < MAX_ATTEMPTS_PER_DOSE and not pill_detected:
+        attempts += 1
+
+        # ---- spin the right motor once ----
+        if funnel == 1:
+            lcd_print("Motor 1 ON", f"Attempt {attempts}")
+            dispense_servo1_once()
+        else:
+            lcd_print("Motor 2 ON", f"Attempt {attempts}")
+            dispense_servo2_once()
+
+        # small delay for pill to land
+        time.sleep(0.5)
+
+        # ---- read load cell ----
+        weight = pill_detected_by_scale_raw(5)
+        weight_abs = abs(weight)
+        print(f"[Funnel {funnel}] Attempt {attempts}, weight = {weight:.2f} g (abs={weight_abs:.2f} g)")
+
+        if weight_abs >= SINGLE_PILL_THRESHOLD:
+            # at least one pill detected
+            pill_detected = True
+            if weight_abs >= SINGLE_PILL_THRESHOLD * OVERDOSE_FACTOR:
+                overdose = True
+        else:
+            # no pill yet -> retry after a short pause
+            lcd_print("No pill detected", "Retrying...")
+            time.sleep(1.0)
+
+    # ---- after loop: check result ----
+    if not pill_detected:
+        # all attempts failed
+        lcd_print(f"F{funnel}: NO PILL", "Max retries reached")
+        time.sleep(2)
+        show_main_menu()
+        return
+
+    # at least one pill was detected -> decrement count for that funnel
+    if funnel == 1:
         if pills_funnel_1 > 0:
             pills_funnel_1 -= 1
-        lcd_print("Pill 1 OK",
-                  f"Funnel 1 left: {pills_funnel_1}")
-        time.sleep(1)
+        left = pills_funnel_1
     else:
-        lcd_print("Pill 1 FAIL", "Check Funnel 1")
-        time.sleep(2)
-
-    update_leds_with_inventory()
-
-    # Motor 2 -> Funnel 2
-    lcd_print("Motor 2 ON", "Dropping Pill 2...")
-    dispense_pill_motor(servo2)
-    lcd_print("Checking Pill 2", "")
-    if pill_detected_by_scale():
         if pills_funnel_2 > 0:
             pills_funnel_2 -= 1
-        lcd_print("Pill 2 OK",
-                  f"Funnel 2 left: {pills_funnel_2}")
-        time.sleep(1)
+        left = pills_funnel_2
+
+    save_state()
+
+    if overdose:
+        lcd_print("Potential overdose", f"F{funnel}: >1 pill?")
     else:
-        lcd_print("Pill 2 FAIL", "Check Funnel 2")
-        time.sleep(2)
+        lcd_print(f"Pill OK (F{funnel})", f"Pills left: {left}")
 
-    update_leds_with_inventory()
-
-    lcd_print("Dispense Done!", "")
     time.sleep(2)
     show_main_menu()
 
@@ -481,17 +741,22 @@ def run_dispense_sequence():
 # =========================
 
 def main():
-    global last_target_minute, dispense_done_for_target
+    global last_target_minute_f1, last_target_minute_f2
+    global dispense_done_for_target_f1, dispense_done_for_target_f2
 
-    init_pill_counts()
+    # Load previous state if exists; otherwise ask for pill counts
+    if load_state():
+        lcd_print("Loaded saved state",
+                  f"F1:{pills_funnel_1}  F2:{pills_funnel_2}")
+        time.sleep(2)
+    else:
+        init_pill_counts()
+
     lcd_splash()
     show_main_menu()
 
     try:
         while True:
-            # LEDs reflect inventory state
-            update_leds_with_inventory()
-
             # Read button actions
             press_set  = detect_press_type(BTN_SET)
             press_fp   = detect_press_type(BTN_FP)
@@ -509,7 +774,7 @@ def main():
             if press_fp == 1:
                 fingerprint_setup_menu()
 
-            # Button 3: single press -> show time remaining (now shows F1 + F2)
+            # Button 3: single press -> show time remaining (F1 + F2)
             if press_time == 1:
                 show_time_remaining()
 
@@ -519,33 +784,55 @@ def main():
                 time.sleep(1)
                 show_main_menu()
 
-            # Background scheduling logic (for Funnel 1 schedule)
-            tr = get_time_remaining()
-            if tr is not None:
-                d, h, m, target_minute = tr
+            # ===== Background scheduling logic for Funnel 1 =====
+            tr1 = _get_time_remaining_for_schedule(schedule_funnel_1)
+            if tr1 is not None:
+                d1, h1, m1, t1 = tr1
 
-                if last_target_minute != target_minute:
-                    last_target_minute = target_minute
-                    dispense_done_for_target = False
+                if last_target_minute_f1 != t1:
+                    last_target_minute_f1 = t1
+                    dispense_done_for_target_f1 = False
 
                 # 1 minute before dose
-                if d == 0 and h == 0 and m == 1 and not dispense_done_for_target:
-                    lcd_print("Arming scale...", "Dose in 1 minute")
+                if d1 == 0 and h1 == 0 and m1 == 1 and not dispense_done_for_target_f1:
+                    lcd_print("Arming scale F1", "Dose in 1 minute")
                     time.sleep(2)
                     show_main_menu()
 
                 # At dose time
-                if d == 0 and h == 0 and m == 0 and not dispense_done_for_target:
-                    run_dispense_sequence()
-                    dispense_done_for_target = True
+                if d1 == 0 and h1 == 0 and m1 == 0 and not dispense_done_for_target_f1:
+                    run_dispense_for_funnel(1)
+                    dispense_done_for_target_f1 = True
+
+            # ===== Background scheduling logic for Funnel 2 =====
+            tr2 = _get_time_remaining_for_schedule(schedule_funnel_2)
+            if tr2 is not None:
+                d2, h2, m2, t2 = tr2
+
+                if last_target_minute_f2 != t2:
+                    last_target_minute_f2 = t2
+                    dispense_done_for_target_f2 = False
+
+                # 1 minute before dose
+                if d2 == 0 and h2 == 0 and m2 == 1 and not dispense_done_for_target_f2:
+                    lcd_print("Arming scale F2", "Dose in 1 minute")
+                    time.sleep(2)
+                    show_main_menu()
+
+                # At dose time
+                if d2 == 0 and h2 == 0 and m2 == 0 and not dispense_done_for_target_f2:
+                    run_dispense_for_funnel(2)
+                    dispense_done_for_target_f2 = True
 
             time.sleep(0.05)  # Loop delay
 
     except KeyboardInterrupt:
         pass
     finally:
-        servo1.stop()
-        servo2.stop()
+        # Release servos and cleanup
+        pca.channels[0].duty_cycle = 0
+        pca.channels[1].duty_cycle = 0
+        pca.deinit()
         GPIO.cleanup()
 
 if __name__ == "__main__":
