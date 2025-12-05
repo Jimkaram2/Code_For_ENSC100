@@ -36,9 +36,9 @@ STATE_FILE = "daily_dose_state.json"
 GPIO.setmode(GPIO.BCM)
 
 # Buttons
-BTN_SET  = 5   # Button 1: Set schedule / refill
-BTN_FP   = 6   # Button 2: Fingerprint / confirm
-BTN_TIME = 13  # Button 3: Time remaining / return to menu (double press)
+BTN_SET  = 20   # Button 1: Set schedule / refill
+BTN_FP   = 16   # Button 2: Fingerprint / confirm
+BTN_TIME = 6  # Button 3: Time remaining / return to menu (double press)
 
 for pin in (BTN_SET, BTN_FP, BTN_TIME):
     GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -53,12 +53,12 @@ MAX_US = 2500
 PERIOD_US = 1000000 / 50.0  # 20000 µs period
 
 # === PER-SERVO CENTERS (physical degrees) ===
-PHYSICAL_CENTER_SERVO1 = 30
-PHYSICAL_CENTER_SERVO2 = 10
+PHYSICAL_CENTER_SERVO1 = 35
+PHYSICAL_CENTER_SERVO2 = 0
 
 # === PER-SERVO TARGET OFFSETS (relative to each center) ===
-TARGET_OFFSET_SERVO1 = -30   # from 30° -> 0°
-TARGET_OFFSET_SERVO2 = 31    # from 10° -> 41°
+TARGET_OFFSET_SERVO1 = -35  # from 30° -> 0°
+TARGET_OFFSET_SERVO2 = 25    # from 10° -> 41°
 
 def angle_to_duty(angle_deg):
     """Convert angle in degrees to 16-bit duty cycle for PCA9685."""
@@ -152,7 +152,7 @@ DT_PIN  = 23   # HX711 DT
 SCK_PIN = 24   # HX711 SCK
 
 # Use your calibrated factor
-CALIBRATION_FACTOR = 45.06  # <-- adjust if needed
+CALIBRATION_FACTOR = 62.06  # <-- adjust if needed
 
 hx = HX711(DT_PIN, SCK_PIN)
 hx.set_reference_unit(CALIBRATION_FACTOR)
@@ -168,11 +168,11 @@ finger = adafruit_fingerprint.Adafruit_Fingerprint(uart)
 # =========================
 # Tune these for your two pills (in grams).
 # Example: F1 pill ~0.75g, F2 pill ~1.2g
-PILL_THRESHOLD_F1   = 0.4   # minimum |weight| to call "one pill" in Funnel 1
-PILL_THRESHOLD_F2   = 0.4   # minimum |weight| to call "one pill" in Funnel 2
+PILL_THRESHOLD_F1   = 4.0   # minimum |weight| to call "one pill" in Funnel 1
+PILL_THRESHOLD_F2   = 2.67  # minimum |weight| to call "one pill" in Funnel 2
 
-OVERDOSE_FACTOR_F1  = 1.8   # ≥ threshold * factor => potential overdose (F1)
-OVERDOSE_FACTOR_F2  = 1.8   # ≥ threshold * factor => potential overdose (F2)
+OVERDOSE_FACTOR_F1  = 0.67   # ≥ threshold * factor => potential overdose (F1)
+OVERDOSE_FACTOR_F2  = 0.67  # ≥ threshold * factor => potential overdose (F2)
 
 MAX_ATTEMPTS_PER_DOSE = 10  # safety: how many retries per dose
 
@@ -216,7 +216,7 @@ def show_main_menu():
     """Show the main menu screen in terminal."""
     lcd_print(
         "> Daily Dose Menu",
-        "1:Set Sched  (dbl:Refill)\n2:FP Menu     3:Time (dbl:Menu)"
+        "1:Set Sched  (dbl:Refill)\n2:FP Menu     3:Time"
     )
 
 # =========================
@@ -287,7 +287,7 @@ def load_state():
         print(f"Error loading state: {e}")
         return False
 
-def count_with_buttons(prompt_funnel, initial_value=0, max_count=99):
+def count_with_buttons(prompt_funnel, initial_value=0, max_count=400):
     """
     Generic counter using:
     - Button 1 single press: increment count (wraps 0..max_count) by 5
@@ -696,7 +696,7 @@ def run_dispense_for_funnel(funnel):
         # ---- read load cell ----
         weight = pill_detected_by_scale_raw(5)
         weight_abs = abs(weight)
-        print(f"[Funnel {funnel}] Attempt {attempts}, weight = {weight:.2f} g (abs={weight_abs:.2f} g)")
+        print(f"[Funnel {funnel}] Attempt {attempts},)")
 
         if weight_abs >= SINGLE_PILL_THRESHOLD:
             # at least one pill detected
@@ -729,7 +729,7 @@ def run_dispense_for_funnel(funnel):
     save_state()
 
     if overdose:
-        lcd_print("Potential overdose", f"F{funnel}: >1 pill?")
+        lcd_print("Pill OK", f"F{funnel}: {left}")
     else:
         lcd_print(f"Pill OK (F{funnel})", f"Pills left: {left}")
 
